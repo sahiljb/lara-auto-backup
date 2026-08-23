@@ -3,132 +3,69 @@
 namespace SahilJB\LaraAutoBackup\Console\Commands;
 
 use Illuminate\Console\Command;
-use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Storage;
-use SahilJB\LaraAutoBackup\DatabaseDumper;
+use SahilJB\LaraAutoBackup\BackupManager;
 use Throwable;
 
 class BackupDatabaseCommand extends Command
 {
     protected $signature = 'backup:database
-        {--disk= : Filesystem disk to upload to (overrides config)}
-        {--connection= : Database connection to back up (overrides config)}
-        {--no-compress : Upload an uncompressed .sql dump}
-        {--keep-days= : Days of backups to retain on the disk}';
+        {--disk=* : Disk(s) to upload to, overriding config}
+        {--connection=* : Database connection(s) to back up, overriding config}
+        {--path= : Folder inside the disk to upload to}
+        {--no-compress : Upload an uncompressed dump}
+        {--keep-days= : Retention window in days (0 disables pruning)}
+        {--only-table=* : Back up only these tables}
+        {--exclude-table=* : Skip these tables}';
 
-    protected $description = 'Dump the database and upload it to S3 / Cloudflare R2.';
+    protected $description = 'Back up the database and upload it to S3 / Cloudflare R2.';
 
-    public function handle(): int
+    public function handle(BackupManager $backup): int
     {
-        $disk = $this->option('disk') ?: config('auto-backup.disk');
-        $connection = $this->option('connection') ?: config('auto-backup.connection') ?: config('database.default');
-        $compress = $this->option('no-compress') ? false : (bool) config('auto-backup.compress');
-        $keepDays = (int) ($this->option('keep-days') ?? config('auto-backup.keep_days'));
-
-        $dbConfig = config("database.connections.{$connection}");
-
-        if (! $dbConfig) {
-            $this->error("Database connection [{$connection}] is not configured.");
-
-            return self::FAILURE;
-        }
-
-        $tempPath = rtrim(config('auto-backup.temp_path'), '/');
-
-        if (! is_dir($tempPath) && ! mkdir($tempPath, 0700, true) && ! is_dir($tempPath)) {
-            $this->error("Unable to create temp directory [{$tempPath}].");
-
-            return self::FAILURE;
-        }
-
-        $filename = sprintf('%s-%s.sql', $dbConfig['database'] ?: $connection, now()->format('Y-m-d-His'));
-        $localPath = $tempPath . '/' . $filename;
+        $backup->onProgress(fn (string $message) => $this->line("  {$message}"));
 
         try {
-            $this->info("Dumping [{$connection}]...");
-
-            $dumpPath = (new DatabaseDumper($dbConfig, config('auto-backup.dump_binary_path')))
-                ->dumpTo($localPath, $compress);
-
-            $remotePath = trim(config('auto-backup.path'), '/') . '/' . basename($dumpPath);
-
-            $this->info(sprintf('Uploading %s (%s) to [%s]...', basename($dumpPath), $this->humanSize(filesize($dumpPath)), $disk));
-
-            $stream = fopen($dumpPath, 'rb');
-
-            try {
-                Storage::disk($disk)->writeStream($remotePath, $stream);
-            } finally {
-                if (is_resource($stream)) {
-                    fclose($stream);
-                }
-            }
-
-            if (config('auto-backup.delete_local_after_upload')) {
-                @unlink($dumpPath);
-            }
-
-            $this->info("Backup uploaded to {$remotePath}");
-
-            if ($keepDays > 0) {
-                $this->prune($disk, $keepDays);
-            }
-
-            return self::SUCCESS;
+            $results = $backup->run($this->overrides());
         } catch (Throwable $e) {
-            @unlink($localPath);
-            @unlink($localPath . '.gz');
-
-            $this->error('Backup failed: ' . $e->getMessage());
+            $this->components->error($e->getMessage());
             report($e);
-            $this->notifyFailure($e);
 
             return self::FAILURE;
         }
+
+        foreach ($results as $result) {
+            $this->components->info(sprintf(
+                '%s → %s (%s) in %ss',
+                $result->database,
+                $result->remotePath,
+                $result->humanSize(),
+                $result->duration
+            ));
+        }
+
+        return self::SUCCESS;
     }
 
-    private function prune(string $disk, int $keepDays): void
+    /**
+     * @return array<string, mixed>
+     */
+    private function overrides(): array
     {
-        $directory = trim(config('auto-backup.path'), '/');
-        $cutoff = now()->subDays($keepDays)->getTimestamp();
-        $storage = Storage::disk($disk);
-        $deleted = 0;
+        $overrides = [
+            'disks' => $this->option('disk'),
+            'connections' => $this->option('connection'),
+            'path' => $this->option('path'),
+            'only_tables' => $this->option('only-table'),
+            'exclude_tables' => $this->option('exclude-table'),
+        ];
 
-        foreach ($storage->files($directory) as $file) {
-            if ($storage->lastModified($file) < $cutoff) {
-                $storage->delete($file);
-                $deleted++;
-            }
+        if ($this->option('no-compress')) {
+            $overrides['compress'] = false;
         }
 
-        if ($deleted > 0) {
-            $this->info("Pruned {$deleted} backup(s) older than {$keepDays} day(s).");
-        }
-    }
-
-    private function notifyFailure(Throwable $e): void
-    {
-        $url = config('auto-backup.failure_webhook_url');
-
-        if (! $url) {
-            return;
+        if ($this->option('keep-days') !== null) {
+            $overrides['retention'] = ['days' => (int) $this->option('keep-days')];
         }
 
-        try {
-            Http::timeout(10)->post($url, [
-                'text' => sprintf('[%s] Database backup failed: %s', config('app.name'), $e->getMessage()),
-            ]);
-        } catch (Throwable) {
-            // A failing webhook must not mask the original backup failure.
-        }
-    }
-
-    private function humanSize(int $bytes): string
-    {
-        $units = ['B', 'KB', 'MB', 'GB', 'TB'];
-        $i = $bytes > 0 ? (int) floor(log($bytes, 1024)) : 0;
-        $i = min($i, count($units) - 1);
-
-        return round($bytes / (1024 ** $i), 2) . ' ' . $units[$i];
+        return $overrides;
     }
 }
