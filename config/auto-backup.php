@@ -30,4 +30,31 @@ return [
     // Notification webhook (e.g. Slack incoming webhook) triggered on backup failure. Optional.
     'failure_webhook_url' => env('BACKUP_FAILURE_WEBHOOK_URL'),
 
+    // Automatic scheduling. The package registers the command with Laravel's
+    // scheduler itself, so you only need `php artisan schedule:work` (or the
+    // system cron entry) running — no edits to routes/console.php required.
+    'schedule' => [
+
+        'enabled' => env('BACKUP_SCHEDULE_ENABLED', true),
+
+        // Any valid cron expression. Examples:
+        //   '0 * * * *'    hourly, on the hour  (default)
+        //   '*/30 * * * *' every 30 minutes
+        //   '0 */6 * * *'  every 6 hours
+        //   '0 2 * * *'    daily at 02:00
+        'cron' => env('BACKUP_SCHEDULE_CRON', '0 * * * *'),
+
+        // Timezone the cron expression is evaluated in (null = app timezone).
+        'timezone' => env('BACKUP_SCHEDULE_TIMEZONE'),
+
+        // Skip a run if the previous one is still going — important for hourly
+        // backups of a large database.
+        'without_overlapping' => true,
+
+        // Run on a single server only when using multiple app servers.
+        // Requires a cache driver that supports locks (redis, memcached, database).
+        'on_one_server' => env('BACKUP_SCHEDULE_ON_ONE_SERVER', false),
+
+    ],
+
 ];

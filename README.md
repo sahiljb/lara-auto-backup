@@ -58,11 +58,41 @@ php artisan backup:database --no-compress
 
 ## Schedule it
 
-In `routes/console.php` (Laravel 11+) or `app/Console/Kernel.php`:
+The package **registers itself with Laravel's scheduler** — it runs hourly out of
+the box. You don't need to touch `routes/console.php`; you only need Laravel's
+scheduler running, which is the usual single system cron entry:
+
+```
+* * * * * cd /path-to-your-project && php artisan schedule:run >> /dev/null 2>&1
+```
+
+Change the frequency any time from `.env` — no code change, no redeploy:
+
+```dotenv
+BACKUP_SCHEDULE_CRON="0 * * * *"     # hourly (default)
+BACKUP_SCHEDULE_CRON="*/30 * * * *"  # every 30 minutes
+BACKUP_SCHEDULE_CRON="0 */6 * * *"   # every 6 hours
+BACKUP_SCHEDULE_CRON="0 2 * * *"     # daily at 02:00
+```
+
+Verify what's registered with `php artisan schedule:list`.
+
+Prefer to wire it up yourself? Set `BACKUP_SCHEDULE_ENABLED=false` and schedule
+the command by hand:
 
 ```php
-Schedule::command('backup:database')->dailyAt('02:00')->onOneServer();
+Schedule::command('backup:database')->hourly()->withoutOverlapping()->onOneServer();
 ```
+
+### Notes on frequent backups
+
+- `without_overlapping` is on by default, so a slow hourly dump never stacks on
+  top of the previous one.
+- Retention is in **days**, not runs — hourly backups with `BACKUP_KEEP_DAYS=14`
+  means ~336 files in the bucket. Lower `BACKUP_KEEP_DAYS`, or use a bucket
+  lifecycle rule, if that's more than you want to store.
+- Running on multiple app servers? Set `BACKUP_SCHEDULE_ON_ONE_SERVER=true` so
+  only one of them takes the backup (needs a lock-capable cache driver).
 
 ## Config reference
 
@@ -75,6 +105,10 @@ Schedule::command('backup:database')->dailyAt('02:00')->onOneServer();
 | `keep_days` | `BACKUP_KEEP_DAYS` | `14` | Prune remote backups older than this (`0` disables) |
 | `dump_binary_path` | `BACKUP_DUMP_BINARY_PATH` | `null` | Directory holding `mysqldump` / `pg_dump` |
 | `failure_webhook_url` | `BACKUP_FAILURE_WEBHOOK_URL` | `null` | POSTed a JSON `{"text": ...}` on failure |
+| `schedule.enabled` | `BACKUP_SCHEDULE_ENABLED` | `true` | Let the package schedule itself |
+| `schedule.cron` | `BACKUP_SCHEDULE_CRON` | `0 * * * *` | How often the backup runs |
+| `schedule.timezone` | `BACKUP_SCHEDULE_TIMEZONE` | app timezone | Timezone for the cron expression |
+| `schedule.on_one_server` | `BACKUP_SCHEDULE_ON_ONE_SERVER` | `false` | Only one server runs it |
 
 ## Notes
 
