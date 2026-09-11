@@ -9,10 +9,12 @@ use Illuminate\Support\ServiceProvider;
 use SahilJB\LaraAutoBackup\Console\Commands\BackupDatabaseCommand;
 use SahilJB\LaraAutoBackup\Console\Commands\CleanBackupsCommand;
 use SahilJB\LaraAutoBackup\Console\Commands\ListBackupsCommand;
+use SahilJB\LaraAutoBackup\Console\Commands\RestoreDatabaseCommand;
 use SahilJB\LaraAutoBackup\Dumpers\DumperFactory;
 use SahilJB\LaraAutoBackup\Events\BackupCompleted;
 use SahilJB\LaraAutoBackup\Events\BackupFailed;
 use SahilJB\LaraAutoBackup\Listeners\SendWebhookNotification;
+use SahilJB\LaraAutoBackup\Restorers\RestorerFactory;
 
 class BackupServiceProvider extends ServiceProvider
 {
@@ -25,8 +27,14 @@ class BackupServiceProvider extends ServiceProvider
             $app['config']->get('auto-backup.dumpers', [])
         ));
 
+        $this->app->singleton(RestorerFactory::class, fn ($app) => new RestorerFactory(
+            $app,
+            $app['config']->get('auto-backup.restorers', [])
+        ));
+
         $this->app->singleton(BackupManager::class, fn ($app) => new BackupManager(
             $app->make(DumperFactory::class),
+            $app->make(RestorerFactory::class),
             $app->make(FilesystemFactory::class),
             $app['config']->get('auto-backup', [])
         ));
@@ -47,6 +55,7 @@ class BackupServiceProvider extends ServiceProvider
                 BackupDatabaseCommand::class,
                 ListBackupsCommand::class,
                 CleanBackupsCommand::class,
+                RestoreDatabaseCommand::class,
             ]);
 
             $this->registerSchedule();
@@ -97,6 +106,6 @@ class BackupServiceProvider extends ServiceProvider
      */
     public function provides(): array
     {
-        return [BackupManager::class, DumperFactory::class, 'auto-backup'];
+        return [BackupManager::class, DumperFactory::class, RestorerFactory::class, 'auto-backup'];
     }
 }

@@ -4,12 +4,17 @@ namespace SahilJB\LaraAutoBackup;
 
 use Illuminate\Contracts\Filesystem\Factory as FilesystemFactory;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use SahilJB\LaraAutoBackup\Dumpers\DumperFactory;
 use SahilJB\LaraAutoBackup\Events\BackupCompleted;
 use SahilJB\LaraAutoBackup\Events\BackupFailed as BackupFailedEvent;
 use SahilJB\LaraAutoBackup\Events\BackupStarted;
+use SahilJB\LaraAutoBackup\Events\RestoreCompleted;
+use SahilJB\LaraAutoBackup\Events\RestoreFailed;
+use SahilJB\LaraAutoBackup\Events\RestoreStarted;
 use SahilJB\LaraAutoBackup\Exceptions\BackupFailed;
+use SahilJB\LaraAutoBackup\Restorers\RestorerFactory;
 use Throwable;
 
 class BackupManager
@@ -19,6 +24,7 @@ class BackupManager
 
     public function __construct(
         private DumperFactory $dumpers,
+        private RestorerFactory $restorers,
         private FilesystemFactory $filesystem,
         private array $config,
     ) {
@@ -44,6 +50,106 @@ class BackupManager
         $this->dumpers->extend($driver, $resolver);
 
         return $this;
+    }
+
+    /**
+     * Register a custom restorer for a database driver.
+     */
+    public function extendRestorer(string $driver, callable $resolver): static
+    {
+        $this->restorers->extend($driver, $resolver);
+
+        return $this;
+    }
+
+    /**
+     * Download an archive and load it into a database.
+     *
+     * @param  string  $archive     Path on the disk, e.g. "backups/shop-2026-08-23-140000.sql.gz".
+     * @param  array<string, mixed>  $overrides
+     */
+    public function restore(string $archive, array $overrides = []): void
+    {
+        $options = $this->options($overrides);
+
+        $connection = $overrides['connection']
+            ?? Arr::first($options['connections'])
+            ?? (string) config('database.default');
+
+        $dbConfig = config("database.connections.{$connection}");
+
+        if (! $dbConfig) {
+            throw BackupFailed::unknownConnection($connection);
+        }
+
+        $disk = $overrides['disk'] ?? Arr::first($options['disks']);
+        $database = (string) ($dbConfig['database'] ?? $connection);
+
+        Event::dispatch(new RestoreStarted($connection, $database, $archive));
+
+        $startedAt = microtime(true);
+        $localPath = null;
+
+        try {
+            $localPath = $this->download($disk, $archive, $options);
+
+            $this->report("Restoring into [{$connection}]…");
+            $this->restorers->make($dbConfig)->restore($dbConfig, $localPath, $options);
+
+            // The open connection still points at the pre-restore database
+            // (for SQLite, a file that no longer exists), so drop it and let
+            // Laravel reconnect on the next query.
+            DB::purge($connection);
+
+            Event::dispatch(new RestoreCompleted(
+                $connection,
+                $database,
+                $archive,
+                round(microtime(true) - $startedAt, 2)
+            ));
+        } catch (Throwable $e) {
+            Event::dispatch(new RestoreFailed($connection, $archive, $e));
+
+            throw $e;
+        } finally {
+            if ($localPath) {
+                @unlink($localPath);
+            }
+        }
+    }
+
+    /**
+     * Stream an archive off the disk into the local staging directory.
+     */
+    private function download(string $disk, string $archive, array $options): string
+    {
+        $storage = $this->filesystem->disk($disk);
+
+        if (! $storage->exists($archive)) {
+            throw BackupFailed::archiveNotFound($archive, $disk);
+        }
+
+        $localPath = $this->temporaryDirectory($options) . DIRECTORY_SEPARATOR . basename($archive);
+
+        $this->report("Downloading {$archive} from [{$disk}]…");
+
+        $remote = $storage->readStream($archive);
+        $local = $remote ? fopen($localPath, 'wb') : false;
+
+        if ($remote === false || $remote === null || $local === false) {
+            throw BackupFailed::downloadFailed($archive, $disk);
+        }
+
+        try {
+            stream_copy_to_stream($remote, $local);
+        } finally {
+            if (is_resource($remote)) {
+                fclose($remote);
+            }
+            fclose($local);
+        }
+
+        return $localPath;
     }
 
     /**
