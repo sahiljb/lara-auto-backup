@@ -25,6 +25,11 @@ abstract class BaseDumper implements Dumper
         return [];
     }
 
+    public function extension(): string
+    {
+        return 'sql';
+    }
+
     public function dump(array $config, string $targetPath, array $options = []): void
     {
         $command = array_merge(
@@ -32,24 +37,44 @@ abstract class BaseDumper implements Dumper
             array_map('strval', $options['dump_options'] ?? [])
         );
 
-        $shell = $this->escape($command)
-            . (($options['compress'] ?? false) ? ' | gzip' : '')
-            . ' > ' . escapeshellarg($targetPath);
+        // The dump is streamed straight into the (optionally gzipped) target
+        // file. Compressing in PHP rather than piping through gzip keeps this
+        // working on Windows, where no such binary exists.
+        $compress = (bool) ($options['compress'] ?? false);
+        $handle = $compress ? gzopen($targetPath, 'wb9') : fopen($targetPath, 'wb');
 
-        $process = Process::fromShellCommandline(
-            $shell,
+        if ($handle === false) {
+            throw BackupFailed::dumpFailed($config['database'] ?? '', "Unable to write to [{$targetPath}].");
+        }
+
+        $process = new Process(
+            $command,
             null,
             $this->environment($config),
             null,
             $options['timeout'] ?? null
         );
 
-        $process->run();
+        $errors = '';
+
+        try {
+            $process->run(function (string $type, string $buffer) use ($handle, $compress, &$errors) {
+                if ($type === Process::ERR) {
+                    $errors .= $buffer;
+
+                    return;
+                }
+
+                $compress ? gzwrite($handle, $buffer) : fwrite($handle, $buffer);
+            });
+        } finally {
+            $compress ? gzclose($handle) : fclose($handle);
+        }
 
         if (! $process->isSuccessful()) {
             @unlink($targetPath);
 
-            throw BackupFailed::dumpFailed($config['database'] ?? '', trim($process->getErrorOutput()));
+            throw BackupFailed::dumpFailed($config['database'] ?? '', trim($errors));
         }
 
         if (! is_file($targetPath) || filesize($targetPath) === 0) {
@@ -57,11 +82,6 @@ abstract class BaseDumper implements Dumper
 
             throw BackupFailed::emptyDump($config['database'] ?? '');
         }
-    }
-
-    public function extension(): string
-    {
-        return 'sql';
     }
 
     /**
@@ -72,13 +92,5 @@ abstract class BaseDumper implements Dumper
         $path = $options['dump_binary_path'] ?? null;
 
         return $path ? rtrim($path, '/\\') . DIRECTORY_SEPARATOR . $name : $name;
-    }
-
-    /**
-     * @param  array<int, string>  $command
-     */
-    protected function escape(array $command): string
-    {
-        return implode(' ', array_map('escapeshellarg', $command));
     }
 }

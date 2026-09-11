@@ -29,12 +29,13 @@ php artisan backup:database
 - **One-command restore** — `backup:restore` pulls an archive back out of the bucket, with a confirmation prompt and production guard.
 - **Events + webhooks** — hook into success and failure, or POST to Slack/Discord.
 - **No credentials in the process list** — passwords go through `MYSQL_PWD` / `PGPASSWORD`.
+- **Works on Windows** — gzip is handled in PHP, so there's no dependency on `gzip`, `gunzip` or shell pipes.
 
 ## Requirements
 
 - PHP 8.1+
 - Laravel 10, 11 or 12
-- `mysqldump` or `pg_dump` on the server (SQLite needs neither)
+- `mysqldump` / `mysql`, or `pg_dump` / `psql`, on the server (SQLite needs neither)
 - `league/flysystem-aws-s3-v3` ^3.0 for S3/R2 uploads
 
 ## Installation
@@ -387,6 +388,21 @@ gunzip < shop-2026-08-23-140000.sqlite.gz > database/database.sqlite
 > **Test your restores.** A backup you have never restored is a hypothesis, not
 > a backup. Restore into a scratch database periodically and confirm the data is
 > what you expect.
+
+## Windows
+
+Everything works under Laragon, XAMPP and WSL with no extra setup. Compression
+and decompression are done in PHP, so `gzip`/`gunzip` are not required — only
+the database client binaries are.
+
+If you hit `'mysqldump' is not recognized`, the MySQL `bin` folder isn't on your
+PATH. Either add it, or point the package at it:
+
+```dotenv
+BACKUP_DUMP_BINARY_PATH="C:\\laragon\\bin\\mysql\\mysql-8.0.30-winx64\\bin"
+```
+
+That setting is used for both dumping and restoring.
 
 ## Testing
 

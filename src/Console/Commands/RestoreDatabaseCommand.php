@@ -88,17 +88,27 @@ class RestoreDatabaseCommand extends Command
             return $archives[0]['path'];
         }
 
-        $choices = [];
+        $rows = [];
 
-        foreach ($archives as $file) {
-            $choices[$file['path']] = sprintf(
-                '%s — %s, %s',
-                $file['path'],
+        foreach ($archives as $index => $file) {
+            $rows[] = [
+                $index + 1,
+                basename($file['path']),
                 FileSize::human($file['size']),
-                date('Y-m-d H:i:s', $file['last_modified'])
-            );
+                date('Y-m-d H:i:s', $file['last_modified']),
+            ];
         }
 
-        return $this->choice('Which backup would you like to restore?', $choices, array_key_first($choices));
+        $this->table(['#', 'Archive', 'Size', 'Created'], $rows);
+
+        // A numbered prompt rather than choice(): the autocompleting picker
+        // shells out to stty, which doesn't exist on Windows.
+        $count = count($archives);
+
+        do {
+            $answer = (int) $this->ask("Which backup would you like to restore? [1-{$count}, newest first]", '1');
+        } while ($answer < 1 || $answer > $count);
+
+        return $archives[$answer - 1]['path'];
     }
 }
