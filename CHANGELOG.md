@@ -21,3 +21,5 @@ Initial release.
 - `BackupStarted`, `BackupCompleted`, `BackupFailed`, `RestoreStarted`,
   `RestoreCompleted` and `RestoreFailed` events, plus optional webhook notifications.
 - `Backup` facade for programmatic use.
+- Windows support: dumping and restoring stream through PHP's zlib rather than
+  shell pipes, so `gzip`, `gunzip` and `cat` are not required.

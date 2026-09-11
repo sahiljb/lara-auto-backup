@@ -28,24 +28,36 @@ abstract class BaseRestorer implements Restorer
             throw BackupFailed::restoreFailed($config['database'] ?? '', "Archive [{$archivePath}] not found.");
         }
 
-        // Decompress on the fly so a large archive is never expanded to disk.
-        $reader = str_ends_with($archivePath, '.gz') ? 'gunzip -c' : 'cat';
+        // Zlib's stream wrapper decompresses as the client reads, so there is
+        // no gunzip dependency and the archive is never expanded to disk.
+        $source = str_ends_with($archivePath, '.gz')
+            ? 'compress.zlib://' . $archivePath
+            : $archivePath;
 
-        $shell = $reader . ' ' . escapeshellarg($archivePath)
-            . ' | ' . $this->escape($this->command($config, $options));
+        $input = fopen($source, 'rb');
 
-        $process = Process::fromShellCommandline(
-            $shell,
-            null,
-            $this->environment($config),
-            null,
-            $options['timeout'] ?? null
-        );
+        if ($input === false) {
+            throw BackupFailed::restoreFailed($config['database'] ?? '', "Unable to read [{$archivePath}].");
+        }
 
-        $process->run();
+        try {
+            $process = new Process(
+                $this->command($config, $options),
+                null,
+                $this->environment($config),
+                $input,
+                $options['timeout'] ?? null
+            );
 
-        if (! $process->isSuccessful()) {
-            throw BackupFailed::restoreFailed($config['database'] ?? '', trim($process->getErrorOutput()));
+            $process->run();
+
+            if (! $process->isSuccessful()) {
+                throw BackupFailed::restoreFailed($config['database'] ?? '', trim($process->getErrorOutput()));
+            }
+        } finally {
+            if (is_resource($input)) {
+                fclose($input);
+            }
         }
     }
 
@@ -54,13 +66,5 @@ abstract class BaseRestorer implements Restorer
         $path = $options['dump_binary_path'] ?? null;
 
         return $path ? rtrim($path, '/\\') . DIRECTORY_SEPARATOR . $name : $name;
-    }
-
-    /**
-     * @param  array<int, string>  $command
-     */
-    protected function escape(array $command): string
-    {
-        return implode(' ', array_map('escapeshellarg', $command));
     }
 }
