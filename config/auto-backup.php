@@ -3,6 +3,9 @@
 use SahilJB\LaraAutoBackup\Dumpers\MySqlDumper;
 use SahilJB\LaraAutoBackup\Dumpers\PostgresDumper;
 use SahilJB\LaraAutoBackup\Dumpers\SqliteDumper;
+use SahilJB\LaraAutoBackup\Restorers\MySqlRestorer;
+use SahilJB\LaraAutoBackup\Restorers\PostgresRestorer;
+use SahilJB\LaraAutoBackup\Restorers\SqliteRestorer;
 
 return [
 
@@ -118,6 +121,24 @@ return [
         'mariadb' => MySqlDumper::class,
         'pgsql' => PostgresDumper::class,
         'sqlite' => SqliteDumper::class,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Restorers
+    |--------------------------------------------------------------------------
+    |
+    | The other half of the pair: maps a driver to the class that loads an
+    | archive back into the database, used by `php artisan backup:restore`.
+    | Implement SahilJB\LaraAutoBackup\Restorers\Restorer to customise.
+    |
+    */
+
+    'restorers' => [
+        'mysql' => MySqlRestorer::class,
+        'mariadb' => MySqlRestorer::class,
+        'pgsql' => PostgresRestorer::class,
+        'sqlite' => SqliteRestorer::class,
     ],
 
     /*

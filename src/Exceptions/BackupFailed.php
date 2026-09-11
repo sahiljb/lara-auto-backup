@@ -16,6 +16,26 @@ class BackupFailed extends RuntimeException
         return new self("Database connection [{$connection}] is not configured.");
     }
 
+    public static function unsupportedRestoreDriver(string $driver): self
+    {
+        return new self("No restorer registered for database driver [{$driver}]. Add one under the 'restorers' key in config/auto-backup.php.");
+    }
+
+    public static function restoreFailed(string $database, string $reason): self
+    {
+        return new self(trim("Restore of [{$database}] failed. {$reason}"));
+    }
+
+    public static function archiveNotFound(string $path, string $disk): self
+    {
+        return new self("Archive [{$path}] was not found on disk [{$disk}].");
+    }
+
+    public static function downloadFailed(string $path, string $disk): self
+    {
+        return new self("Unable to download [{$path}] from disk [{$disk}].");
+    }
+
     public static function dumpFailed(string $database, string $reason): self
     {
         return new self(trim("Dump of [{$database}] failed. {$reason}"));

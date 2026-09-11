@@ -26,6 +26,7 @@ php artisan backup:database
 - **MySQL, MariaDB, PostgreSQL, SQLite** — and the dumpers are swappable if you need something else.
 - **Memory-safe** — the archive is streamed to the disk, so database size doesn't matter.
 - **Retention** — prune by age, with a `keep_at_least` safety net so a paused scheduler can't leave you with an empty bucket.
+- **One-command restore** — `backup:restore` pulls an archive back out of the bucket, with a confirmation prompt and production guard.
 - **Events + webhooks** — hook into success and failure, or POST to Slack/Discord.
 - **No credentials in the process list** — passwords go through `MYSQL_PWD` / `PGPASSWORD`.
 
@@ -169,6 +170,10 @@ php artisan backup:list --disk=s3
 # Prune old archives
 php artisan backup:clean --days=7
 php artisan backup:clean --days=7 --keep-at-least=0
+
+# Restore (see Restoring below)
+php artisan backup:restore
+php artisan backup:restore --latest --force
 ```
 
 ## Configuration
@@ -192,6 +197,7 @@ Everything below lives in `config/auto-backup.php` and is env-overridable.
 | `retention.days` | `BACKUP_KEEP_DAYS` | `14` | Prune archives older than this (`0` disables) |
 | `retention.keep_at_least` | `BACKUP_KEEP_AT_LEAST` | `3` | Never prune below this many archives |
 | `dumpers` | — | see config | Driver → dumper class map |
+| `restorers` | — | see config | Driver → restorer class map |
 | `notifications.webhook_url` | `BACKUP_WEBHOOK_URL` | — | POSTed `{"text": "..."}` |
 | `notifications.on_failure` | `BACKUP_NOTIFY_ON_FAILURE` | `true` | Notify when a backup fails |
 | `notifications.on_success` | `BACKUP_NOTIFY_ON_SUCCESS` | `false` | Notify on every success |
@@ -251,6 +257,9 @@ Listen for these to plug in your own notifications, metrics or audit records:
 | `SahilJB\LaraAutoBackup\Events\BackupStarted` | A connection's dump begins | `connection`, `database` |
 | `SahilJB\LaraAutoBackup\Events\BackupCompleted` | Upload succeeded | `result` (`BackupResult`) |
 | `SahilJB\LaraAutoBackup\Events\BackupFailed` | Anything threw | `connection`, `exception` |
+| `SahilJB\LaraAutoBackup\Events\RestoreStarted` | A restore begins | `connection`, `database`, `archive` |
+| `SahilJB\LaraAutoBackup\Events\RestoreCompleted` | Restore succeeded | `connection`, `database`, `archive`, `duration` |
+| `SahilJB\LaraAutoBackup\Events\RestoreFailed` | A restore threw | `connection`, `archive`, `exception` |
 
 ```php
 use Illuminate\Support\Facades\Event;
@@ -307,7 +316,62 @@ Or register one at runtime from a service provider:
 Backup::extend('mysql', fn (array $config) => new MyTunedMySqlDumper);
 ```
 
+Restorers work the same way — implement `Restorers\Restorer`, then map it under
+the `restorers` key or call `Backup::extendRestorer('mysql', ...)`.
+
 ## Restoring
+
+`backup:restore` pulls the archive straight back out of R2/S3, decompresses it
+and loads it into the database — you never touch the bucket by hand.
+
+```bash
+# Pick from a list of what's in the bucket
+php artisan backup:restore
+
+# Restore the most recent backup
+php artisan backup:restore --latest
+
+# Restore a specific archive
+php artisan backup:restore backups/shop-2026-08-23-140000.sql.gz
+
+# From a specific disk, into a specific connection
+php artisan backup:restore --latest --disk=r2 --connection=mysql
+```
+
+Restoring **overwrites the target database**, so the command tells you what it's
+about to replace and asks for confirmation. In `production` it refuses to run at
+all without `--force`:
+
+```bash
+php artisan backup:restore --latest --force
+```
+
+Use `--force` in scripts and CI only when you're certain of the target — there
+is no undo. A common safe pattern is restoring production data into a *staging*
+connection:
+
+```bash
+php artisan backup:restore --latest --disk=r2 --connection=staging --force
+```
+
+Programmatically:
+
+```php
+use SahilJB\LaraAutoBackup\Facades\Backup;
+
+Backup::restore('backups/shop-2026-08-23-140000.sql.gz', [
+    'disk' => 'r2',
+    'connection' => 'mysql',
+]);
+```
+
+The archive is streamed to a temp file, loaded, then deleted, so restoring a
+large database doesn't blow up memory. Afterwards the connection is purged so
+your app reconnects to the restored data rather than the stale handle.
+
+### Restoring by hand
+
+If you'd rather download the archive from the R2 dashboard and do it yourself:
 
 ```bash
 # MySQL / MariaDB
@@ -320,7 +384,9 @@ gunzip < shop-2026-08-23-140000.sql.gz | psql -U user -d shop
 gunzip < shop-2026-08-23-140000.sqlite.gz > database/database.sqlite
 ```
 
-Test your restores. A backup you've never restored is a hypothesis.
+> **Test your restores.** A backup you have never restored is a hypothesis, not
+> a backup. Restore into a scratch database periodically and confirm the data is
+> what you expect.
 
 ## Testing
 
